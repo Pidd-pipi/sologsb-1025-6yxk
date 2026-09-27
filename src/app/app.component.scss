@@ -163,10 +163,54 @@ blockquote { margin: 0 0 15px; padding: 15px 18px; border-left: 4px solid #ef835
 .version-summary dl { margin: 0; display: grid; grid-template-columns: auto 1fr; align-content: start; gap: 5px 10px; font-size: 11px; }
 .version-summary dt { color: #89999d; }
 .version-summary dd { margin: 0; color: #4d646c; text-align: right; }
+
+/* 多页签修订冲突 */
+.status-dot.stale { background: #e25c4a; box-shadow: 0 0 0 4px rgba(226,92,74,.16); }
+.save-state.stale { color: #ffd9d1; font-weight: 700; }
+.stale-workspace.frozen { opacity: .5; pointer-events: none; filter: grayscale(.25); }
+.conflict-zone { display: grid; gap: 14px; margin-bottom: 18px; }
+.conflict-banner { display: flex; align-items: center; gap: 16px; padding: 16px 20px; border: 1px solid #efaca1; border-radius: 15px; background: #fff1ee; box-shadow: 0 8px 26px rgba(176,62,48,.08); }
+.conflict-sign { padding: 8px 12px; border-radius: 9px; color: #fff; background: #cc503d; font-weight: 800; letter-spacing: .12em; flex: 0 0 auto; }
+.conflict-headline { flex: 1; min-width: 0; }
+.conflict-headline strong { color: #8f3324; font-size: 15px; }
+.conflict-headline p { margin: 4px 0 0; color: #a06a5e; font-size: 12px; line-height: 1.6; }
+.conflict-banner-actions { display: flex; gap: 8px; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; }
+.conflict-grid { display: grid; grid-template-columns: minmax(0, 380px) minmax(0, 1fr); gap: 14px; align-items: start; }
+.conflict-meta-table { display: grid; gap: 0; }
+.conflict-meta-head, .conflict-meta-row { display: grid; grid-template-columns: 86px minmax(0,1fr) minmax(0,1fr); gap: 8px; }
+.conflict-meta-head { color: #6e8188; font-size: 10px; padding-bottom: 7px; border-bottom: 1px solid #e4ecec; }
+.conflict-meta-head strong { font-weight: 700; }
+.conflict-meta-row { padding: 8px 0; border-bottom: 1px solid #f0f4f4; font-size: 11px; color: #6b7f86; }
+.conflict-meta-row span { color: #516a73; font-weight: 700; }
+.conflict-meta-row p { margin: 0; line-height: 1.55; word-break: break-word; }
+.conflict-meta-row.changed { background: #fff7e9; border-radius: 8px; }
+.conflict-meta-row.changed p:first-of-type { color: #9a5a24; font-weight: 600; }
+.conflict-lang-status { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.pill { padding: 4px 10px; border-radius: 999px; background: #edf2f2; color: #5d747c; font-size: 10px; font-weight: 700; }
+.pill.danger { background: #ffebe6; color: #b84c38; }
+.pill.ok { background: #e5f6ee; color: #27795e; }
+.conflict-titles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.conflict-titles p { margin: 0; padding: 10px 12px; border-radius: 9px; background: #fff8ea; font-size: 12px; color: #6e5330; line-height: 1.6; }
+.conflict-titles b { display: block; margin-bottom: 3px; color: #b0701f; font-size: 10px; }
+.conflict-actions { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.conflict-actions .muted { margin: 0; flex: 1 1 240px; }
+.conflict-attempts { margin-top: 14px; padding: 10px 12px; border-radius: 10px; background: #fbf0ee; }
+.conflict-attempts strong { color: #b1493a; font-size: 11px; }
+.conflict-attempts ul { margin: 6px 0 0; padding-left: 18px; color: #96645a; font-size: 11px; line-height: 1.7; }
+.conflict-journal { display: grid; gap: 10px; }
+.conflict-journal article { padding: 12px 13px; border: 1px solid #e4ecec; border-left: 4px solid #e08a78; border-radius: 11px; background: #fbfdfd; }
+.conflict-journal article header { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.conflict-journal article header strong { display: block; color: #334b53; font-size: 12px; }
+.conflict-journal article header span { display: block; margin-top: 2px; color: #8aa0a6; font-size: 10px; }
+.conflict-journal article > p { margin: 6px 0 0; color: #789098; font-size: 11px; }
+.conflict-journal article ul { margin: 5px 0 0; padding-left: 17px; color: #a06a5e; font-size: 10.5px; line-height: 1.65; }
+.conflict-journal .resolution-line { color: #4d7a66 !important; font-weight: 600; }
+
 @media (max-width: 1100px) {
   .view-grid, .check-layout, .review-grid, .version-layout { grid-template-columns: 1fr; }
   .side-column { grid-template-columns: repeat(3, 1fr); }
   .version-layout > aside nb-card { position: static; }
+  .conflict-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
   .app-header, .notice-strip, .section-heading { align-items: flex-start; flex-direction: column; }

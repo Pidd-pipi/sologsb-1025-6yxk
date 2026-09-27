@@ -8,10 +8,14 @@
       </div>
     </div>
     <div class="header-actions">
-      <span class="save-state"><span class="status-dot" [class.locked]="isLocked"></span>本地自动保存 {{ lastSavedAt }}</span>
-      <button nbButton status="basic" size="small" (click)="undo()" [disabled]="!history.length">撤销 ⌘Z</button>
-      <button nbButton status="basic" size="small" (click)="redo()" [disabled]="!future.length">重做 ⌘Y</button>
-      <button nbButton status="success" size="small" (click)="saveNow()">保存草稿</button>
+      <span class="save-state" [class.stale]="isStale">
+        <span class="status-dot" [class.locked]="isLocked" [class.stale]="isStale"></span>
+        <ng-container *ngIf="isStale; else freshState">本页已过期 · 基准 #{{ activeConflict?.baseRevision }} · 最新 #{{ activeConflict?.storedRevision }}</ng-container>
+        <ng-template #freshState>本地自动保存 {{ lastSavedAt }} · 修订号 #{{ draft.revision }}</ng-template>
+      </span>
+      <button nbButton status="basic" size="small" (click)="undo()" [disabled]="!history.length || isStale">撤销 ⌘Z</button>
+      <button nbButton status="basic" size="small" (click)="redo()" [disabled]="!future.length || isStale">重做 ⌘Y</button>
+      <button nbButton [status]="isStale ? 'danger' : 'success'" size="small" (click)="saveNow()">{{ isStale ? '已过期 · 保存被锁定' : '保存草稿' }}</button>
     </div>
   </nb-layout-header>
 
@@ -44,6 +48,79 @@
       </button>
     </nav>
 
+    <section *ngIf="activeConflict" class="conflict-zone">
+      <div class="conflict-banner">
+        <div class="conflict-sign">冲突</div>
+        <div class="conflict-headline">
+          <strong>本页草稿已过期，不能直接保存</strong>
+          <p>本页基于修订号 #{{ activeConflict.baseRevision }}，检测到更新（{{ sourceText(activeConflict) }}）于 {{ formatDateTime(activeConflict.detectedAt) }} 写入修订号 #{{ activeConflict.storedRevision }}。
+            {{ conflictLocked ? '最新稿为锁定稿，另存覆盖已被禁止。' : '请先比对差异，再选择载入最新稿或把本页另存为新修订。' }}</p>
+        </div>
+        <div class="conflict-banner-actions">
+          <button nbButton status="info" (click)="resolveLoadLatest()">载入最新稿（放弃本页改动）</button>
+          <button nbButton status="success" [disabled]="conflictLocked" (click)="resolveSaveAsNew()">把本页另存为新修订</button>
+        </div>
+      </div>
+
+      <div class="conflict-grid">
+        <nb-card class="panel conflict-meta-card">
+          <nb-card-header>
+            <div><span class="section-kicker">字段差异</span><h3>本页内容 vs 最新稿</h3></div>
+            <span class="count-pill" [class.danger]="conflictHasChanges">{{ conflictMetaChangedCount }} 项变化</span>
+          </nb-card-header>
+          <nb-card-body>
+            <div class="conflict-meta-table">
+              <div class="conflict-meta-head"><span>字段</span><strong>本页（修订号 #{{ activeConflict.baseRevision }}）</strong><strong>最新稿（修订号 #{{ activeConflict.storedRevision }}）</strong></div>
+              <div class="conflict-meta-row" *ngFor="let row of conflictMetaRows" [class.changed]="row.changed">
+                <span>{{ row.label }}</span>
+                <p>{{ row.local || '—' }}</p>
+                <p>{{ row.latest || '—' }}</p>
+              </div>
+            </div>
+          </nb-card-body>
+        </nb-card>
+
+        <nb-card class="panel conflict-diff-card">
+          <nb-card-header class="diff-header">
+            <div><span class="section-kicker">正文逐句差异（LCS）</span><h3>{{ conflictSelectedLanguage?.name }}</h3></div>
+            <nb-select [ngModel]="conflictLanguageId" (ngModelChange)="conflictLanguageId = $event">
+              <nb-option *ngFor="let language of conflictLanguages" [value]="language.id">{{ language.name }}</nb-option>
+            </nb-select>
+          </nb-card-header>
+          <nb-card-body *ngIf="conflictSelectedLanguage as language">
+            <div class="conflict-lang-status">
+              <span class="pill danger" *ngIf="language.missingLocal">最新稿新增的语言，本页没有</span>
+              <span class="pill danger" *ngIf="language.missingLatest">本页新增的语言，最新稿没有</span>
+              <span class="pill" *ngIf="language.changed && !language.missingLocal && !language.missingLatest">{{ conflictChangedRowCount }} 处句子变化 · 标题{{ language.local?.title !== language.latest?.title ? '不同' : '相同' }}</span>
+              <span class="pill ok" *ngIf="!language.changed">该语言两稿一致</span>
+            </div>
+            <div class="conflict-titles" *ngIf="language.local?.title !== language.latest?.title">
+              <p><b>本页标题</b>{{ language.local?.title || '—' }}</p>
+              <p><b>最新稿标题</b>{{ language.latest?.title || '—' }}</p>
+            </div>
+            <div class="diff-legend"><span class="same">未变化</span><span class="changed">措辞变化</span><span class="added">最新稿新增</span><span class="removed">本页删除</span></div>
+            <div class="diff-table">
+              <div class="diff-head"><strong>本页内容</strong><strong>最新稿</strong></div>
+              <div class="diff-row" *ngFor="let row of conflictLanguageDiff(language)" [class]="row.kind">
+                <p>{{ row.left || '—' }}</p><p>{{ row.right || '—' }}</p>
+              </div>
+              <p *ngIf="!conflictLanguageDiff(language).length" class="empty-copy">两边正文均为空。</p>
+            </div>
+            <div class="conflict-actions">
+              <button nbButton status="info" (click)="resolveLoadLatest()">载入最新稿</button>
+              <button nbButton status="success" [disabled]="conflictLocked" (click)="resolveSaveAsNew()">本页另存为新修订</button>
+              <p class="muted" *ngIf="conflictLocked">锁定稿不可被过期页签覆盖：请先载入最新稿，再通过“发起紧急修订”修改。</p>
+            </div>
+            <div class="conflict-attempts" *ngIf="activeConflict.attempts.length">
+              <strong>本页被拦截的直接保存</strong>
+              <ul><li *ngFor="let attempt of activeConflict.attempts">{{ attempt }}</li></ul>
+            </div>
+          </nb-card-body>
+        </nb-card>
+      </div>
+    </section>
+
+    <div class="stale-workspace" [class.frozen]="isStale" [attr.inert]="isStale ? '' : null">
     <div *ngIf="draft.emergencyRevision" class="emergency-banner">
       <div class="emergency-sign">修订</div>
       <div><strong>正在处理紧急修订</strong><p>已从锁定版本派生新草稿，原版本不会被覆盖。完成后需重新进行发布检查。</p></div>
@@ -288,8 +365,28 @@
               </article>
             </nb-card-body>
           </nb-card>
+
+          <nb-card class="panel conflict-journal-card">
+            <nb-card-header><div><span class="section-kicker">并发留痕</span><h3>修订冲突与处理记录</h3></div><span class="count-pill">{{ journalRecords.length }}</span></nb-card-header>
+            <nb-card-body class="conflict-journal">
+              <article *ngFor="let record of journalRecords">
+                <header>
+                  <div>
+                    <strong>修订号 #{{ record.baseRevision }} → #{{ record.storedRevision }}</strong>
+                    <span>{{ record.tabLabel }} · {{ sourceText(record) }}</span>
+                  </div>
+                  <nb-badge [status]="resolutionStatus(record)" [text]="record.resolution === 'pending' ? '待处理' : record.resolution === 'loaded-latest' ? '已载入最新' : record.resolution === 'saved-as-new' ? '已另存' : '已失效'"></nb-badge>
+                </header>
+                <p>检测于 {{ formatDateTime(record.detectedAt) }}<ng-container *ngIf="record.resolvedAt">；{{ resolutionText(record) }}，处理于 {{ formatDateTime(record.resolvedAt) }}</ng-container></p>
+                <ul *ngIf="record.attempts.length"><li *ngFor="let attempt of record.attempts">{{ attempt }}</li></ul>
+                <p *ngIf="record.resolution !== 'pending'" class="resolution-line">{{ resolutionText(record) }}</p>
+              </article>
+              <p *ngIf="!journalRecords.length" class="empty-copy">尚无多页签冲突记录。</p>
+            </nb-card-body>
+          </nb-card>
         </div>
       </div>
     </section>
+    </div>
   </nb-layout-column>
 </nb-layout>
