@@ -17,7 +17,7 @@ import {
   NbToastrService
 } from '@nebular/theme';
 
-type WorkspaceView = 'compose' | 'checks' | 'review' | 'versions';
+type WorkspaceView = 'compose' | 'checks' | 'review' | 'versions' | 'conflict';
 type ReviewStatus = 'pending' | 'approved' | 'changes';
 type NoticeStatus = 'draft' | 'in-review' | 'locked';
 type CheckLevel = 'error' | 'warning' | 'info';
@@ -115,7 +115,41 @@ interface NoticeTemplate {
   body: Record<string, string>;
 }
 
+interface StoredRecord {
+  revision: number;
+  savedAt: string;
+  savedBy: string;
+  draft: NoticeDraft;
+}
+
+interface PendingConflict {
+  tabId: string;
+  baseRevision: number;
+  savedAt: string;
+  draft: NoticeDraft;
+}
+
+interface ConflictResolution {
+  id: string;
+  at: string;
+  tabId: string;
+  action: 'load-latest' | 'save-new-revision' | 'locked-blocked';
+  baseRevision: number;
+  targetRevision: number;
+  resultRevision: number;
+  draftTitle: string;
+}
+
+interface MetaDiffRow {
+  label: string;
+  mine: string;
+  latest: string;
+}
+
 const STORAGE_KEY = 'sologsb-1025-emergency-notice-v1';
+const PENDING_KEY = `${STORAGE_KEY}:pending`;
+const RESOLUTIONS_KEY = `${STORAGE_KEY}:resolutions`;
+const TAB_KEY = `${STORAGE_KEY}:tab`;
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
@@ -312,22 +346,57 @@ export class AppComponent implements OnInit {
   lastSavedAt = '';
   history: NoticeDraft[] = [];
   future: NoticeDraft[] = [];
+  readonly tabId: string = this.resolveTabId();
+  baseRevision = 0;
+  stale = false;
+  latestRecord: StoredRecord | null = null;
+  resolutions: ConflictResolution[] = [];
+  readonly resolutionLabels: Record<ConflictResolution['action'], string> = {
+    'load-latest': '载入最新稿',
+    'save-new-revision': '另存为新修订',
+    'locked-blocked': '锁定保护拦截'
+  };
 
   constructor(private readonly toastr: NbToastrService) {}
 
   ngOnInit(): void {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        this.draft = this.migrate(JSON.parse(saved) as NoticeDraft);
-      } catch {
-        localStorage.removeItem(STORAGE_KEY);
-        this.draft = initialDraft();
+    const record = this.readRecord();
+    const pending = this.readPendingMap()[this.tabId];
+    if (record) {
+      if (pending && pending.baseRevision !== record.revision) {
+        // 本页签上次关闭时留有未解决的冲突，恢复冲突现场。
+        this.draft = this.migrate(pending.draft);
+        this.baseRevision = pending.baseRevision;
+        this.latestRecord = record;
+        this.stale = true;
+      } else {
+        this.draft = this.migrate(record.draft);
+        this.baseRevision = record.revision;
+        if (pending) this.clearPending();
       }
+      this.lastSavedAt = this.formatDateTime(record.savedAt);
+    } else if (pending) {
+      this.draft = this.migrate(pending.draft);
+      this.baseRevision = pending.baseRevision;
     }
+    this.resolutions = this.readResolutions();
     this.compareBaseId = this.draft.versions.at(-2)?.id ?? '';
     this.compareTargetId = this.draft.versions.at(-1)?.id ?? '';
-    this.lastSavedAt = this.formatDateTime(this.draft.updatedAt);
+    if (!this.lastSavedAt) this.lastSavedAt = this.formatDateTime(this.draft.updatedAt);
+  }
+
+  @HostListener('window:storage', ['$event'])
+  handleStorage(event: StorageEvent): void {
+    if (event.key === STORAGE_KEY && event.newValue) {
+      const record = this.parseRecord(event.newValue);
+      if (record && record.revision !== this.baseRevision) {
+        this.latestRecord = record;
+        this.markStale();
+        this.writePending();
+      }
+    } else if (event.key === RESOLUTIONS_KEY) {
+      this.resolutions = this.readResolutions();
+    }
   }
 
   @HostListener('window:keydown', ['$event'])
@@ -343,7 +412,6 @@ export class AppComponent implements OnInit {
     } else if (event.key.toLowerCase() === 's') {
       event.preventDefault();
       this.saveNow();
-      this.toastr.success('草稿已保存在当前浏览器。', '保存成功');
     }
   }
 
@@ -471,6 +539,44 @@ export class AppComponent implements OnInit {
     const baseLanguage = base.languages.find((language) => language.id === this.selectedLanguageId);
     const targetLanguage = target.languages.find((language) => language.id === this.selectedLanguageId);
     return this.diffSentences(this.splitSentences(baseLanguage?.body ?? ''), this.splitSentences(targetLanguage?.body ?? ''));
+  }
+
+  get latestLocked(): boolean {
+    return this.latestRecord?.draft.status === 'locked';
+  }
+
+  get conflictMetaRows(): MetaDiffRow[] {
+    const latest = this.latestRecord?.draft;
+    if (!latest) return [];
+    const mine = this.draft;
+    const localeName = (id: string): string => this.locales.find((item) => item.id === id)?.name ?? id;
+    const statusName = (status: NoticeStatus): string =>
+      status === 'locked' ? '已锁定' : status === 'in-review' ? '审阅中' : '草稿';
+    const unresolved = (draft: NoticeDraft): string => String(draft.discussions.filter((item) => !item.resolved).length);
+    const rows: MetaDiffRow[] = [
+      { label: '标题', mine: mine.title, latest: latest.title },
+      { label: '事件类型', mine: mine.eventType, latest: latest.eventType },
+      { label: '严重程度', mine: mine.severity, latest: latest.severity },
+      { label: '影响范围', mine: mine.scope, latest: latest.scope },
+      { label: '事件时间', mine: this.formatDateTime(mine.eventAt), latest: this.formatDateTime(latest.eventAt) },
+      { label: '生效时间', mine: this.formatDateTime(mine.effectiveAt), latest: this.formatDateTime(latest.effectiveAt) },
+      { label: '失效时间', mine: this.formatDateTime(mine.expiresAt), latest: this.formatDateTime(latest.expiresAt) },
+      { label: '目标渠道', mine: mine.channels.join('、'), latest: latest.channels.join('、') },
+      { label: '必需语言', mine: mine.requiredLocales.map(localeName).join('、'), latest: latest.requiredLocales.map(localeName).join('、') },
+      { label: '语言版本', mine: mine.languages.map((item) => item.name).join('、'), latest: latest.languages.map((item) => item.name).join('、') },
+      { label: '状态', mine: statusName(mine.status), latest: statusName(latest.status) },
+      { label: '版本号', mine: mine.version, latest: latest.version },
+      { label: '未解决讨论', mine: unresolved(mine), latest: unresolved(latest) }
+    ];
+    return rows.filter((row) => row.mine !== row.latest);
+  }
+
+  get conflictDiff(): DiffRow[] {
+    const latest = this.latestRecord?.draft;
+    if (!latest) return [];
+    const mineLanguage = this.draft.languages.find((language) => language.id === this.selectedLanguageId);
+    const latestLanguage = latest.languages.find((language) => language.id === this.selectedLanguageId);
+    return this.diffSentences(this.splitSentences(latestLanguage?.body ?? ''), this.splitSentences(mineLanguage?.body ?? ''));
   }
 
   updateMeta(field: 'title' | 'eventType' | 'severity' | 'scope' | 'eventAt' | 'effectiveAt' | 'expiresAt', value: string): void {
@@ -633,7 +739,59 @@ export class AppComponent implements OnInit {
   }
 
   saveNow(): void {
+    if (this.stale) {
+      this.toastr.warning('本页已过期，请先比较差异并处理冲突。', '无法直接保存');
+      this.activeView = 'conflict';
+      return;
+    }
     this.persist();
+    if (this.stale) {
+      this.activeView = 'conflict';
+    } else {
+      this.toastr.success('草稿已保存在当前浏览器。', '保存成功');
+    }
+  }
+
+  loadLatest(): void {
+    const record = this.latestRecord ?? this.readRecord();
+    if (!record) return;
+    this.logResolution('load-latest', record, record.revision);
+    this.draft = clone(record.draft);
+    this.baseRevision = record.revision;
+    this.latestRecord = null;
+    this.stale = false;
+    this.history = [];
+    this.future = [];
+    this.clearPending();
+    this.lastSavedAt = this.formatDateTime(record.savedAt);
+    this.compareBaseId = this.draft.versions.at(-2)?.id ?? '';
+    this.compareTargetId = this.draft.versions.at(-1)?.id ?? '';
+    this.toastr.success(`已载入修订 #${record.revision}，本页未保存的改动已放弃。`, '已载入最新稿');
+  }
+
+  saveAsNewRevision(): void {
+    const record = this.latestRecord ?? this.readRecord();
+    if (!record) return;
+    if (record.draft.status === 'locked') {
+      this.logResolution('locked-blocked', record, record.revision);
+      this.toastr.danger('最新稿已锁定，过期页签不能覆盖。请载入最新稿后发起紧急修订。', '锁定保护');
+      return;
+    }
+    const savedAt = new Date().toISOString();
+    const next: StoredRecord = {
+      revision: record.revision + 1,
+      savedAt,
+      savedBy: this.tabId,
+      draft: { ...this.draft, updatedAt: savedAt }
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    this.logResolution('save-new-revision', record, next.revision);
+    this.baseRevision = next.revision;
+    this.latestRecord = null;
+    this.stale = false;
+    this.clearPending();
+    this.lastSavedAt = this.formatDateTime(savedAt);
+    this.toastr.success(`本页内容已另存为修订 #${next.revision}。`, '冲突已处理');
   }
 
   formatDateTime(value: string): string {
@@ -660,8 +818,114 @@ export class AppComponent implements OnInit {
   }
 
   private persist(): void {
-    this.lastSavedAt = this.formatDateTime(new Date().toISOString());
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...this.draft, updatedAt: new Date().toISOString() }));
+    const record = this.readRecord();
+    const currentRevision = record?.revision ?? 0;
+    if (currentRevision !== this.baseRevision) {
+      // 另一个页签已保存新修订，拒绝覆盖，仅保留本页待处理内容。
+      this.latestRecord = record;
+      this.markStale();
+      this.writePending();
+      return;
+    }
+    const savedAt = new Date().toISOString();
+    const next: StoredRecord = {
+      revision: this.baseRevision + 1,
+      savedAt,
+      savedBy: this.tabId,
+      draft: { ...this.draft, updatedAt: savedAt }
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    this.baseRevision = next.revision;
+    this.latestRecord = null;
+    this.clearPending();
+    this.lastSavedAt = this.formatDateTime(savedAt);
+  }
+
+  private markStale(): void {
+    if (this.stale) return;
+    this.stale = true;
+    this.toastr.warning('另一个页签保存了新修订，本页已过期，不能再直接保存。', '检测到冲突');
+  }
+
+  private resolveTabId(): string {
+    const existing = sessionStorage.getItem(TAB_KEY);
+    if (existing) return existing;
+    const created = uid('tab');
+    sessionStorage.setItem(TAB_KEY, created);
+    return created;
+  }
+
+  private readRecord(): StoredRecord | null {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? this.parseRecord(raw) : null;
+  }
+
+  private parseRecord(raw: string): StoredRecord | null {
+    try {
+      const value = JSON.parse(raw) as Partial<StoredRecord> & NoticeDraft;
+      if (value && typeof value.revision === 'number' && value.draft && Array.isArray(value.draft.languages)) {
+        return value as StoredRecord;
+      }
+      if (value && value.id && Array.isArray(value.languages)) {
+        // 兼容旧版直接保存草稿的格式。
+        return { revision: 1, savedAt: value.updatedAt ?? new Date().toISOString(), savedBy: 'legacy', draft: value };
+      }
+    } catch {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+    return null;
+  }
+
+  private readPendingMap(): Record<string, PendingConflict> {
+    try {
+      const value = JSON.parse(localStorage.getItem(PENDING_KEY) ?? '{}') as Record<string, PendingConflict>;
+      return value && typeof value === 'object' ? value : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private writePending(): void {
+    const map = this.readPendingMap();
+    map[this.tabId] = {
+      tabId: this.tabId,
+      baseRevision: this.baseRevision,
+      savedAt: new Date().toISOString(),
+      draft: clone(this.draft)
+    };
+    localStorage.setItem(PENDING_KEY, JSON.stringify(map));
+  }
+
+  private clearPending(): void {
+    const map = this.readPendingMap();
+    if (this.tabId in map) {
+      delete map[this.tabId];
+      localStorage.setItem(PENDING_KEY, JSON.stringify(map));
+    }
+  }
+
+  private readResolutions(): ConflictResolution[] {
+    try {
+      const value = JSON.parse(localStorage.getItem(RESOLUTIONS_KEY) ?? '[]') as ConflictResolution[];
+      return Array.isArray(value) ? value : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private logResolution(action: ConflictResolution['action'], record: StoredRecord, resultRevision: number): void {
+    const entry: ConflictResolution = {
+      id: uid('resolution'),
+      at: new Date().toISOString(),
+      tabId: this.tabId,
+      action,
+      baseRevision: this.baseRevision,
+      targetRevision: record.revision,
+      resultRevision,
+      draftTitle: this.draft.title
+    };
+    this.resolutions = [...this.resolutions, entry].slice(-100);
+    localStorage.setItem(RESOLUTIONS_KEY, JSON.stringify(this.resolutions));
   }
 
   private migrate(value: NoticeDraft): NoticeDraft {

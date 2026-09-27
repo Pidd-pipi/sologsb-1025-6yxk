@@ -8,10 +8,14 @@
       </div>
     </div>
     <div class="header-actions">
-      <span class="save-state"><span class="status-dot" [class.locked]="isLocked"></span>本地自动保存 {{ lastSavedAt }}</span>
+      <span class="save-state" [class.stale]="stale">
+        <span class="status-dot" [class.locked]="isLocked" [class.stale]="stale"></span>
+        {{ stale ? '页签已过期 · 停留在修订 #' + baseRevision : '本地自动保存 ' + lastSavedAt + ' · 修订 #' + baseRevision }}
+      </span>
       <button nbButton status="basic" size="small" (click)="undo()" [disabled]="!history.length">撤销 ⌘Z</button>
       <button nbButton status="basic" size="small" (click)="redo()" [disabled]="!future.length">重做 ⌘Y</button>
-      <button nbButton status="success" size="small" (click)="saveNow()">保存草稿</button>
+      <button *ngIf="!stale" nbButton status="success" size="small" (click)="saveNow()">保存草稿</button>
+      <button *ngIf="stale" nbButton status="warning" size="small" (click)="activeView = 'conflict'">处理冲突</button>
     </div>
   </nb-layout-header>
 
@@ -42,7 +46,19 @@
       <button [class.active]="activeView === 'versions'" (click)="activeView = 'versions'">
         <span>04</span><strong>锁定与比较</strong><small>冻结、紧急修订、差异</small>
       </button>
+      <button [class.active]="activeView === 'conflict'" [class.attention]="stale" (click)="activeView = 'conflict'">
+        <span>05</span><strong>冲突处理</strong><small>{{ stale ? '本页已过期，待处理' : resolutions.length + ' 条处理记录' }}</small>
+      </button>
     </nav>
+
+    <div *ngIf="stale" class="conflict-banner">
+      <div class="conflict-sign">冲突</div>
+      <div>
+        <strong>本页停留在修订 #{{ baseRevision }}，最新稿已是修订 #{{ latestRecord?.revision }}</strong>
+        <p>另一个页签保存了更新，本页已过期，不能再直接保存。请比较差异后选择载入最新稿或另存为新修订。</p>
+      </div>
+      <button nbButton status="danger" size="small" (click)="activeView = 'conflict'">查看差异并处理</button>
+    </div>
 
     <div *ngIf="draft.emergencyRevision" class="emergency-banner">
       <div class="emergency-sign">修订</div>
@@ -290,6 +306,74 @@
           </nb-card>
         </div>
       </div>
+    </section>
+
+    <section *ngIf="activeView === 'conflict'" class="view-section">
+      <div class="section-heading">
+        <div><span class="eyebrow">多页签协作</span><h2>修订冲突处理</h2><p>保存只接受基于最新修订的修改；过期页签需比较差异后载入最新稿，或把本页另存为新修订。</p></div>
+        <div class="version-actions" *ngIf="stale">
+          <button nbButton status="primary" (click)="loadLatest()">载入最新稿</button>
+          <button nbButton status="warning" (click)="saveAsNewRevision()" [disabled]="latestLocked">本页另存为新修订</button>
+        </div>
+      </div>
+
+      <nb-alert status="success" *ngIf="!stale">当前页签已是最新修订 #{{ baseRevision }}，可以直接保存。</nb-alert>
+      <nb-alert status="danger" *ngIf="stale && latestLocked">最新稿已锁定。锁定稿不能被过期页签覆盖，请载入最新稿后通过“紧急修订”继续修改。</nb-alert>
+
+      <div class="conflict-layout" *ngIf="stale && latestRecord">
+        <nb-card class="panel">
+          <nb-card-header><div><span class="section-kicker">差异总览</span><h3>本页 vs 最新稿</h3></div></nb-card-header>
+          <nb-card-body>
+            <div class="revision-compare">
+              <div><span>本页停留在</span><strong>修订 #{{ baseRevision }}</strong><small>保存被拒绝，内容仅在本页</small></div>
+              <div><span>最新稿</span><strong>修订 #{{ latestRecord.revision }}</strong><small>{{ formatDateTime(latestRecord.savedAt) }} 由另一页签保存</small></div>
+            </div>
+            <div class="meta-diff" *ngIf="conflictMetaRows.length">
+              <div class="meta-diff-head"><strong>字段</strong><strong>本页</strong><strong>最新稿</strong></div>
+              <div class="meta-diff-row" *ngFor="let row of conflictMetaRows">
+                <span>{{ row.label }}</span><p>{{ row.mine || '—' }}</p><p>{{ row.latest || '—' }}</p>
+              </div>
+            </div>
+            <p *ngIf="!conflictMetaRows.length" class="muted">基础信息一致，差异在语言正文中。</p>
+          </nb-card-body>
+        </nb-card>
+
+        <nb-card class="panel">
+          <nb-card-header class="diff-header">
+            <div><span class="section-kicker">正文差异</span><h3>逐句比较</h3></div>
+            <div class="diff-controls">
+              <nb-select [ngModel]="selectedLanguageId" (ngModelChange)="selectedLanguageId = $event">
+                <nb-option *ngFor="let language of draft.languages" [value]="language.id">{{ language.name }}</nb-option>
+              </nb-select>
+            </div>
+          </nb-card-header>
+          <nb-card-body>
+            <div class="diff-legend"><span class="same">未变化</span><span class="changed">措辞变化</span><span class="added">本页新增</span><span class="removed">本页缺少</span></div>
+            <div class="diff-table">
+              <div class="diff-head"><strong>最新稿 · 修订 #{{ latestRecord.revision }}</strong><strong>本页 · 基于修订 #{{ baseRevision }}</strong></div>
+              <div class="diff-row" *ngFor="let row of conflictDiff" [class]="row.kind">
+                <p>{{ row.left || '—' }}</p><p>{{ row.right || '—' }}</p>
+              </div>
+              <p *ngIf="!conflictDiff.length" class="empty-copy">该语言在两侧都没有正文内容。</p>
+            </div>
+          </nb-card-body>
+        </nb-card>
+      </div>
+
+      <nb-card class="panel">
+        <nb-card-header><div><span class="section-kicker">处理记录</span><h3>冲突处理历史</h3></div><span class="count-pill">{{ resolutions.length }}</span></nb-card-header>
+        <nb-card-body class="resolution-list">
+          <article *ngFor="let resolution of resolutions.slice().reverse(); trackBy: trackById">
+            <b [class]="resolution.action">{{ resolutionLabels[resolution.action] }}</b>
+            <div>
+              <strong>{{ resolution.draftTitle || '未命名通知' }}</strong>
+              <p>本页基于修订 #{{ resolution.baseRevision }} · 当时最新修订 #{{ resolution.targetRevision }} → 结果修订 #{{ resolution.resultRevision }}</p>
+            </div>
+            <time>{{ formatDateTime(resolution.at) }}</time>
+          </article>
+          <p *ngIf="!resolutions.length" class="empty-copy">暂无处理记录。发生冲突并完成处理后，结果会保留在这里，关闭页面也不会丢失。</p>
+        </nb-card-body>
+      </nb-card>
     </section>
   </nb-layout-column>
 </nb-layout>
